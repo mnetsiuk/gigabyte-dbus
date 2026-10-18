@@ -31,6 +31,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("gigabyted will run on com.gigabyte.debug to avoid interfering with the real com.gigabyte.daemon");
     }
 
+    // Firmware resets the CPU limits on every boot; put back the ones chosen last.
+    if let Ok(saved) = std::fs::read_to_string(platform::CPU_LIMITS_FILE) {
+        let v: Vec<i32> = saved.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        if v.len() == 3 && platform::valid_cpu_limits(v[0], v[1], v[2]) {
+            if let Err(e) = platform::apply_cpu_limits(v[0], v[1], v[2]) {
+                println!("Restoring CPU limits: {e}");
+            }
+        }
+    }
+
     let connection = Connection::system().await?;
 
     // Setup interface for kernel driver

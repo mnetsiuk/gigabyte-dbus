@@ -6,6 +6,24 @@ pub struct CtrlPlatform {
     pub path: PathBuf
 }
 
+pub const CPU_LIMITS_FILE: &str = "/var/lib/gigabyted/cpu-limits";
+const RAPL_ZONES: [&str; 2] = ["/sys/class/powercap/intel-rapl:0", "/sys/class/powercap/intel-rapl-mmio:0"];
+
+// Any local user may call us, so only accept sane package limits: 5 W <= PL1 <= PL2 <= 135 W, 1-128 s window.
+pub fn valid_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> bool {
+    (5_000..=135_000).contains(&pl1_mw) && (pl1_mw..=135_000).contains(&pl2_mw) && (1..=128).contains(&tau_s)
+}
+
+// Firmware programs both the MSR and the MMIO RAPL interface and the lower one wins, so set both.
+pub fn apply_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> std::io::Result<()> {
+    for zone in RAPL_ZONES.iter().filter(|z| std::path::Path::new(z).exists()) {
+        std::fs::write(format!("{zone}/constraint_0_power_limit_uw"), (pl1_mw as i64 * 1000).to_string())?;
+        std::fs::write(format!("{zone}/constraint_1_power_limit_uw"), (pl2_mw as i64 * 1000).to_string())?;
+        std::fs::write(format!("{zone}/constraint_0_time_window_us"), (tau_s as i64 * 1_000_000).to_string())?;
+    }
+    Ok(())
+}
+
 impl CtrlPlatform {
     pub fn new() -> Result<Self, ()> {
         let mut enumerator = udev::Enumerator::new().unwrap();
@@ -140,9 +158,37 @@ impl CtrlPlatform {
         let lux_high = parts.next().unwrap().parse::<i32>().unwrap();
         (version, lux_low, lux_med, lux_high)
     }
+    // PL1/PL2 in milliwatts and the PL1 window in seconds; remembered and restored on the next start.
+    fn set_cpu_power_limits(&self, pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> i32 {
+        if !valid_cpu_limits(pl1_mw, pl2_mw, tau_s) {
+            return -1;
+        }
+        if let Err(e) = apply_cpu_limits(pl1_mw, pl2_mw, tau_s) {
+            println!("SetCpuPowerLimits: {e}");
+            return -1;
+        }
+        if let Err(e) = std::fs::write(CPU_LIMITS_FILE, format!("{pl1_mw} {pl2_mw} {tau_s}\n")) {
+            println!("SetCpuPowerLimits: could not remember limits: {e}");
+        }
+        0
+    }
     fn get_fan_pwm(&self) -> i32 {
         let device = Device::from_syspath(&self.path).unwrap();
         let fan_pwm = device.attribute_value("fan_pwm").unwrap();
         fan_pwm.to_str().unwrap().parse::<i32>().unwrap()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::valid_cpu_limits;
+
+    #[test]
+    fn cpu_limit_bounds() {
+        assert!(valid_cpu_limits(55_000, 115_000, 56));
+        assert!(valid_cpu_limits(15_000, 30_000, 56));
+        assert!(!valid_cpu_limits(70_000, 60_000, 56)); // PL2 below PL1
+        assert!(!valid_cpu_limits(4_000, 30_000, 56));
+        assert!(!valid_cpu_limits(55_000, 200_000, 56));
+        assert!(!valid_cpu_limits(55_000, 115_000, 0));
     }
 }
