@@ -1,9 +1,13 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use udev::Device;
 use zbus::dbus_interface;
 
+use crate::fast;
+
 pub struct CtrlPlatform {
-    pub path: PathBuf
+    pub path: PathBuf,
+    pub fast: fast::Shared,
 }
 
 pub const CPU_LIMITS_FILE: &str = "/var/lib/gigabyted/cpu-limits";
@@ -37,9 +41,27 @@ impl CtrlPlatform {
         {
             return Ok(Self {
                 path: device.syspath().to_path_buf(),
+                fast: Arc::new(Mutex::new(None)),
             });
         }
         Err(())
+    }
+
+    // After a restart: drive the fans again if the daemon did before.
+    pub fn resume_fast_curve(&self) {
+        if let Some(curve) = fast::load() {
+            match fast::take_over(&self.path) {
+                Ok(()) => *self.fast.lock().unwrap() = Some(curve),
+                Err(e) => println!("Fast curve: could not resume: {e}"),
+            }
+        }
+    }
+
+    // Another fan mode or speed was asked for, so the daemon stops driving the fans.
+    fn release_fast_curve(&self) {
+        if self.fast.lock().unwrap().take().is_some() {
+            fast::forget();
+        }
     }
 }
 
@@ -47,11 +69,13 @@ impl CtrlPlatform {
 impl CtrlPlatform {
     // TODO: Implement
     fn set_fan_mode(&self, value: i32) -> i32 {
+        self.release_fast_curve();
         let mut device = Device::from_syspath(&self.path).unwrap();
         device.set_attribute_value("fan_mode", &(value).to_string()).unwrap();
         0
     }
     fn set_fan_speed(&self, value: i32) -> i32 {
+        self.release_fast_curve();
         let mut device = Device::from_syspath(&self.path).unwrap();
         device.set_attribute_value("fan_custom_speed", &(value).to_string()).unwrap();
         0
@@ -187,6 +211,41 @@ impl CtrlPlatform {
                 -1
             }
         }
+    }
+    // 1: run the curve the EC holds from the daemon, from the CPU's own sensor (see fast.rs);
+    // calling it again re-reads the curve. 0: hand the fans back to the EC.
+    fn set_fast_curve(&self, on: i32) -> i32 {
+        let mut state = self.fast.lock().unwrap();
+        if on == 0 {
+            if state.take().is_some() {
+                fast::forget();
+                fast::hand_back(&self.path);
+            }
+            return 0;
+        }
+        let curve = match fast::read_curve(&self.path) {
+            Ok(c) if fast::valid_curve(&c) => c,
+            Ok(c) => {
+                println!("SetFastCurve: the EC curve is not a rising 15-point curve: {c:?}");
+                return -1;
+            }
+            Err(e) => {
+                println!("SetFastCurve: {e}");
+                return -1;
+            }
+        };
+        if let Err(e) = fast::take_over(&self.path) {
+            println!("SetFastCurve: {e}");
+            return -1;
+        }
+        if let Err(e) = fast::save(&curve) {
+            println!("SetFastCurve: could not remember it: {e}");
+        }
+        *state = Some(curve);
+        0
+    }
+    fn get_fast_curve(&self) -> i32 {
+        self.fast.lock().unwrap().is_some() as i32
     }
     fn get_fan_pwm(&self) -> i32 {
         let device = Device::from_syspath(&self.path).unwrap();

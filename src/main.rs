@@ -1,3 +1,4 @@
+mod fast;
 mod platform;
 
 use std::{error::Error, future::pending, env};
@@ -46,6 +47,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Setup interface for kernel driver
     match CtrlPlatform::new() {
         Ok(ctrl) => {
+            ctrl.resume_fast_curve();
+            let (path, shared) = (ctrl.path.clone(), ctrl.fast.clone());
+            std::thread::spawn(move || {
+                // A dead loop would leave the fans at a fixed speed: exit, so systemd hands them back.
+                if std::panic::catch_unwind(move || fast::run(path, shared)).is_err() {
+                    std::process::exit(1);
+                }
+            });
             connection.object_server().at("/com/gigabyte/Platform", ctrl).await.ok();
         }
         Err(err) => {
