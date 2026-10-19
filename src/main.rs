@@ -10,6 +10,21 @@ use crate::platform::CtrlPlatform;
 // Although we use `async-std` here, you can use any async runtime of choice.
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // ExecStopPost: if the daemon was driving the fans, give them back to the EC.
+    if env::args().any(|a| a == "--hand-back") {
+        if std::path::Path::new(fast::STATE_FILE).exists() {
+            match CtrlPlatform::new() {
+                Ok(ctrl) => {
+                    if let Err(e) = fast::hand_back(&ctrl.path) {
+                        println!("Handing the fans back: {e}");
+                    }
+                }
+                Err(()) => println!("Handing the fans back: no aorus_laptop device"),
+            }
+        }
+        return Ok(());
+    }
+
     let is_service = match env::var_os("IS_SERVICE") {
         Some(val) => val == "1",
         None => false,
@@ -44,10 +59,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let connection = Connection::system().await?;
 
-    // Setup interface for kernel driver
+    // Setup interface for kernel driver; without it there is nothing to serve, so fail and let
+    // systemd show it.
     match CtrlPlatform::new() {
         Ok(ctrl) => {
-            ctrl.resume_fast_curve();
+            if !is_debug {
+                ctrl.resume_fast_curve();
+            }
             let (path, shared) = (ctrl.path.clone(), ctrl.fast.clone());
             std::thread::spawn(move || {
                 // A dead loop would leave the fans at a fixed speed: exit, so systemd hands them back.
@@ -57,9 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             });
             connection.object_server().at("/com/gigabyte/Platform", ctrl).await.ok();
         }
-        Err(err) => {
-            println!("CtrlPlatform: {:?}", err);
-        }
+        Err(()) => return Err("no aorus_laptop platform device".into()),
     }
 
     // Request name

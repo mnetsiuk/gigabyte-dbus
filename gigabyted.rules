@@ -11,6 +11,5 @@ LABEL="gigabyted_start"
 #KERNEL=="aorus_laptop", RUN+="/bin/sh -c 'chown -R :gigabyte-wmi /sys/devices/platform/aorus_laptop/*'"
 #KERNEL=="aorus_laptop", RUN+="/bin/sh -c 'chmod -R g+rw /sys/devices/platform/aorus_laptop/*'"
 ACTION=="add|change", DRIVER=="aorus_laptop", TAG+="systemd", ENV{SYSTEMD_WANTS}="gigabyted.service"
-ACTION=="add|remove", DRIVER=="aorus_laptop", TAG+="systemd", RUN+="systemctl restart gigabyted.service"
 
 LABEL="gigabyted_end"

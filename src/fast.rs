@@ -4,30 +4,48 @@
 use std::fs;
 use std::io::{Error, ErrorKind, Result};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 pub const STATE_FILE: &str = "/var/lib/gigabyted/fast-curve";
+pub const FULL_DUTY: i32 = 229;
 const NORMAL: i32 = 0;
 const CURVE: i32 = 3;
 const FIXED: i32 = 5;
-const FULL_DUTY: i32 = 229;
+const HOT: i32 = 90; // °C: full duty, whatever the curve says
 const TICK: Duration = Duration::from_millis(500);
 const HOLD_S: f64 = 3.0; // after the last rise, before the duty may fall
 const DROP_PER_S: f64 = FULL_DUTY as f64 * 0.02; // then 2% of full duty per second
+const GIVE_UP_AFTER: u32 = 4; // failed ticks in a row (2 s) before handing the fans back
+const RESEND_EVERY: u32 = 20; // ticks (10 s): write the duty again in case the EC lost it
 
 pub type Curve = Vec<(i32, i32)>; // (°C, duty 0-229)
-pub type Shared = Arc<Mutex<Option<Curve>>>; // Some while the daemon drives the fans
+
+pub struct Driving {
+    pub curve: Curve,
+    pub fresh: bool, // just (re)started: the loop starts its ramp over
+}
+
+// Some while the daemon drives the fans. Also serialises everything that touches the driver's
+// shared fan curve index.
+pub type Shared = Arc<Mutex<Option<Driving>>>;
+
+// Nothing panics while holding the lock, so a poisoned one still holds a valid state.
+pub fn lock(shared: &Shared) -> MutexGuard<'_, Option<Driving>> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn invalid(what: String) -> Error {
     Error::new(ErrorKind::InvalidData, what)
 }
 
-// The EC's 15 points: temperature rising, duty never falling.
+// The EC's 15 points: temperature rising, duty never falling, and full duty at the top, so no
+// curve can hold the fans low when it is hot.
 pub fn valid_curve(c: &[(i32, i32)]) -> bool {
     c.len() == 15
         && c.iter().all(|&(t, d)| (0..=100).contains(&t) && (0..=FULL_DUTY).contains(&d))
         && c.windows(2).all(|w| w[1].0 > w[0].0 && w[1].1 >= w[0].1)
+        && c[14].1 == FULL_DUTY
 }
 
 // Duty for a temperature, linear between points, flat beyond the ends.
@@ -74,6 +92,16 @@ fn read_int(path: &Path) -> Result<i32> {
     s.trim().parse().map_err(|_| invalid(format!("{}: {s:?}", path.display())))
 }
 
+// °C from an hwmon millidegree file; anything outside 0-125 °C is a failed read, not a temperature.
+fn read_temp(path: &Path) -> Result<i32> {
+    let t = read_int(path)? / 1000;
+    if (0..=125).contains(&t) {
+        Ok(t)
+    } else {
+        Err(invalid(format!("{}: {t} °C", path.display())))
+    }
+}
+
 fn read_attr(dev: &Path, name: &str) -> Result<i32> {
     read_int(&dev.join(name))
 }
@@ -82,7 +110,7 @@ fn write_attr(dev: &Path, name: &str, value: i32) -> Result<()> {
     fs::write(dev.join(name), value.to_string())
 }
 
-// The curve the EC holds now, as the driver keeps it.
+// The curve the EC holds, as the driver keeps it. Call with the lock held.
 pub fn read_curve(dev: &Path) -> Result<Curve> {
     (0..15)
         .map(|i| {
@@ -95,6 +123,15 @@ pub fn read_curve(dev: &Path) -> Result<Curve> {
             }
         })
         .collect()
+}
+
+// Call with the lock held.
+pub fn write_curve(dev: &Path, c: &[(i32, i32)]) -> Result<()> {
+    for (i, &(temp, duty)) in c.iter().enumerate() {
+        write_attr(dev, "fan_curve_index", i as i32)?;
+        write_attr(dev, "fan_curve_data", duty << 8 | temp)?;
+    }
+    Ok(())
 }
 
 pub fn save(c: &Curve) -> Result<()> {
@@ -115,6 +152,14 @@ pub fn load() -> Option<Curve> {
     valid_curve(&c).then_some(c)
 }
 
+pub fn forget() {
+    if let Err(e) = fs::remove_file(STATE_FILE) {
+        if e.kind() != ErrorKind::NotFound {
+            println!("Fast curve: {STATE_FILE}: {e}");
+        }
+    }
+}
+
 fn ec_hwmon(dev: &Path) -> Result<PathBuf> {
     fs::read_dir(dev.join("hwmon"))?
         .filter_map(|e| e.ok())
@@ -133,20 +178,16 @@ pub fn take_over(dev: &Path) -> Result<()> {
     Ok(())
 }
 
-// Back to the EC running the same curve at its own pace. The driver refuses Fixed -> Curve,
-// so go through Normal.
-pub fn hand_back(dev: &Path) {
-    for mode in [NORMAL, CURVE] {
-        if let Err(e) = write_attr(dev, "fan_mode", mode) {
-            println!("Fast curve: handing the fans back: {e}");
-        }
-    }
-}
-
-pub fn forget() {
-    if let Err(e) = fs::remove_file(STATE_FILE) {
-        if e.kind() != ErrorKind::NotFound {
-            println!("Fast curve: {STATE_FILE}: {e}");
+// Back to the EC: Normal, then Curve if the EC holds a usable curve (a write that stopped halfway
+// may have left a broken one; Normal is the firmware's own profile). Normal first because driver
+// 0.2.0 refuses Fixed -> Curve. Call with the lock held.
+pub fn hand_back(dev: &Path) -> Result<()> {
+    write_attr(dev, "fan_mode", NORMAL)?;
+    match read_curve(dev) {
+        Ok(c) if valid_curve(&c) => write_attr(dev, "fan_mode", CURVE),
+        _ => {
+            println!("Fast curve: the EC curve is not usable, leaving the fans on Normal");
+            Ok(())
         }
     }
 }
@@ -176,69 +217,109 @@ impl Sensors {
 
     // The hottest reading; never less than what the EC itself would go by.
     fn hottest(&self) -> Result<i32> {
-        Ok(read_int(&self.core)?.max(read_int(&self.ec_cpu)?).max(read_int(&self.ec_gpu)?) / 1000)
+        Ok(read_temp(&self.core)?.max(read_temp(&self.ec_cpu)?).max(read_temp(&self.ec_gpu)?))
     }
+}
+
+// Every sensor the loop needs can be read now.
+pub fn sensors_ok(dev: &Path) -> Result<()> {
+    Sensors::find(dev)?.hottest().map(|_| ())
 }
 
 struct Control {
     sensors: Option<Sensors>,
     ramp: Option<Ramp>,
     written: i32,
+    errors: u32,
+    ticks: u32,
 }
 
 impl Control {
-    // One tick; Ok(false) when someone else changed the fan mode.
-    fn tick(&mut self, dev: &Path, curve: &[(i32, i32)], now: f64, dt: f64) -> Result<bool> {
-        if read_attr(dev, "fan_mode")? != FIXED {
-            return Ok(false);
+    fn reset(&mut self) {
+        self.ramp = None;
+        self.written = -1;
+        self.errors = 0;
+    }
+
+    // One tick: Ok(None) while driving, Ok(Some(mode)) when another fan mode was set meanwhile.
+    fn tick(&mut self, dev: &Path, curve: &[(i32, i32)], now: f64, dt: f64) -> Result<Option<i32>> {
+        let mode = read_attr(dev, "fan_mode")?;
+        if mode != FIXED {
+            return Ok(Some(mode));
         }
         if self.sensors.is_none() {
             self.sensors = Some(Sensors::find(dev)?);
         }
-        let s = self.sensors.as_ref().unwrap();
-        let target = duty_for(curve, s.hottest()?);
-        if self.ramp.is_none() {
-            let running = read_int(&s.pwm).unwrap_or(target);
-            self.ramp = Some(Ramp::new(running.max(target), now));
-        }
-        let duty = self.ramp.as_mut().unwrap().step(target, now, dt);
-        if duty != self.written {
+        let Some(s) = &self.sensors else { return Ok(None) };
+        let temp = s.hottest()?;
+        let target = if temp >= HOT { FULL_DUTY } else { duty_for(curve, temp) };
+        // Start from the duty the fans run at, so taking over causes no jump down.
+        let ramp = self
+            .ramp
+            .get_or_insert_with(|| Ramp::new(read_int(&s.pwm).unwrap_or(target).clamp(0, FULL_DUTY).max(target), now));
+        let duty = ramp.step(target, now, dt).clamp(0, FULL_DUTY);
+        self.ticks = self.ticks.wrapping_add(1);
+        if duty != self.written || self.ticks % RESEND_EVERY == 0 {
             write_attr(dev, "fan_custom_speed", duty)?;
             self.written = duty;
         }
-        Ok(true)
+        Ok(None)
     }
 }
 
-// The control loop, on its own thread for the daemon's lifetime.
+// The control loop, on its own thread for the daemon's lifetime. The state is only dropped once
+// the fans are confirmed back with the EC; until then it keeps trying, and the state file stays
+// for ExecStopPost.
 pub fn run(dev: PathBuf, shared: Shared) {
     let start = Instant::now();
     let mut last = 0.0;
-    let mut ctl = Control { sensors: None, ramp: None, written: -1 };
+    let mut ctl = Control { sensors: None, ramp: None, written: -1, errors: 0, ticks: 0 };
     loop {
         std::thread::sleep(TICK);
         let now = start.elapsed().as_secs_f64();
         let dt = now - last;
         last = now;
-        let mut state = shared.lock().unwrap();
-        let Some(curve) = state.clone() else {
-            ctl.ramp = None;
-            ctl.written = -1;
+        let mut state = lock(&shared);
+        let Some(driving) = state.as_mut() else {
+            ctl.reset();
             continue;
         };
+        if driving.fresh {
+            driving.fresh = false;
+            ctl.reset();
+        }
+        let curve = driving.curve.clone();
         match ctl.tick(&dev, &curve, now, dt) {
-            Ok(true) => {}
-            Ok(false) => {
-                println!("Fast curve: the fan mode was changed elsewhere, stopping");
+            Ok(None) => ctl.errors = 0,
+            Ok(Some(mode)) => {
+                // Driver 0.2.0 takes Fixed -> Curve as done while the EC stays in Fixed.
+                if mode == CURVE {
+                    if let Err(e) = hand_back(&dev) {
+                        println!("Fast curve: fan mode 3 was set elsewhere, handing back failed: {e}");
+                        continue;
+                    }
+                }
+                println!("Fast curve: fan mode {mode} was set elsewhere, stopping");
                 *state = None;
                 forget();
             }
             Err(e) => {
-                println!("Fast curve: {e}; handing the fans back to the EC");
-                *state = None;
-                forget();
-                hand_back(&dev);
-                ctl.sensors = None;
+                ctl.errors += 1;
+                ctl.sensors = None; // the driver may have been reloaded
+                if ctl.errors < GIVE_UP_AFTER {
+                    continue;
+                }
+                match hand_back(&dev) {
+                    Ok(()) => {
+                        println!("Fast curve: {e}; handed the fans back to the EC");
+                        *state = None;
+                        forget();
+                    }
+                    Err(h) if ctl.errors == GIVE_UP_AFTER || ctl.errors % 120 == 0 => {
+                        println!("Fast curve: {e}; handing the fans back failed ({h}), retrying")
+                    }
+                    Err(_) => {}
+                }
             }
         }
     }
@@ -260,6 +341,9 @@ mod tests {
         let mut falling = FACTORY;
         falling[7].1 = 60;
         assert!(!valid_curve(&falling));
+        let mut capped = FACTORY; // may not stay below full duty at the top
+        capped[14].1 = 206;
+        assert!(!valid_curve(&capped));
         assert_eq!(duty_for(&FACTORY, 20), 61); // between 0 °C and 50 °C
         assert_eq!(duty_for(&FACTORY, 50), 68);
         assert_eq!(duty_for(&FACTORY, 84), 198);

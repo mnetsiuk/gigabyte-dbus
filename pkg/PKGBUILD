@@ -29,10 +29,8 @@ package() {
 	install -Dm644 gigabyted.rules "${pkgdir}"/etc/udev/rules.d/gigabyted.rules
 	install -Dm644 gigabyted.service "${pkgdir}"/usr/lib/systemd/system/gigabyted.service
 	install -Dm644 gigabyted.conf "${pkgdir}"/usr/share/dbus-1/system.d/gigabyted.conf
-  install -Dm644 gigabyted.sysusers "${pkgdir}"/usr/lib/sysusers.d/$pkgname.conf
 }
 
 post_install() {
-  echo "To enable this, run the following command:"
-  echo "systemctl enable gigabyted.service"
+  echo "gigabyted starts by itself when the aorus-laptop driver binds; members of wheel can use it."
 }
