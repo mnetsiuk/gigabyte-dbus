@@ -10,6 +10,8 @@ GOTO="gigabyted_end"
 LABEL="gigabyted_start"
 #KERNEL=="aorus_laptop", RUN+="/bin/sh -c 'chown -R :gigabyte-wmi /sys/devices/platform/aorus_laptop/*'"
 #KERNEL=="aorus_laptop", RUN+="/bin/sh -c 'chmod -R g+rw /sys/devices/platform/aorus_laptop/*'"
-ACTION=="add|change", DRIVER=="aorus_laptop", TAG+="systemd", ENV{SYSTEMD_WANTS}="gigabyted.service"
+# Every event but remove: a module reload binds the driver in a separate "bind" event, which is the
+# only one that carries DRIVER; without the tag on it systemd sees the device as gone.
+ACTION!="remove", DRIVER=="aorus_laptop", TAG+="systemd", ENV{SYSTEMD_WANTS}="gigabyted.service"
 
 LABEL="gigabyted_end"

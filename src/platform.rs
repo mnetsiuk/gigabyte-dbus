@@ -78,6 +78,13 @@ impl CtrlPlatform {
             fast::forget(); // missing or unusable
             return;
         };
+        // Started on the driver's bind event, the daemon can be a moment ahead of its attributes.
+        for _ in 0..20 {
+            if self.path.join("fan_mode").exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         let mut state = self.fast_state();
         match fast::sensors_ok(&self.path).and_then(|_| fast::take_over(&self.path)) {
             Ok(()) => *state = Some(fast::Driving { curve, fresh: true }),
