@@ -172,6 +172,22 @@ impl CtrlPlatform {
         }
         0
     }
+    // NVIDIA Dynamic Boost is run by nvidia-powerd: enable and start it, or stop and disable it,
+    // so the choice also holds after a reboot.
+    fn set_dynamic_boost(&self, on: i32) -> i32 {
+        let verb = if on != 0 { "enable" } else { "disable" };
+        match std::process::Command::new("systemctl").args([verb, "--now", "nvidia-powerd.service"]).status() {
+            Ok(status) if status.success() => 0,
+            Ok(status) => {
+                println!("SetDynamicBoost: systemctl {verb} {status}");
+                -1
+            }
+            Err(e) => {
+                println!("SetDynamicBoost: {e}");
+                -1
+            }
+        }
+    }
     fn get_fan_pwm(&self) -> i32 {
         let device = Device::from_syspath(&self.path).unwrap();
         let fan_pwm = device.attribute_value("fan_pwm").unwrap();
