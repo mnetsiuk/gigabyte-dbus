@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             });
-            connection.object_server().at("/com/gigabyte/Platform", ctrl).await.ok();
+            connection.object_server().at("/com/gigabyte/Platform", ctrl).await?;
         }
         Err(()) => return Err("no aorus_laptop platform device".into()),
     }
