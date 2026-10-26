@@ -1,0 +1,4 @@
+post_install() {
+  echo "gigabyted starts by itself when the aorus-laptop driver binds; members of wheel can use it."
+  echo "To start it now, reload the driver (modprobe -r aorus_laptop && modprobe aorus_laptop) or reboot."
+}

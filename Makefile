@@ -1,8 +1,13 @@
 DEBUG ?= 0
+# Packages install the rule under /usr/lib/udev/rules.d; /etc is for a local `make install`.
+UDEVRULESDIR ?= /etc/udev/rules.d
 ifeq ($(DEBUG),0)
 	ARGS += --release
 	TARGET = release
+else
+	TARGET = debug
 endif
+BIN = ./target/$(TARGET)/gigabyted
 
 all: build
 
@@ -10,19 +15,21 @@ clean:
 	cargo clean
 
 install:
-	install -Dm755 ./target/release/gigabyted /usr/bin/gigabyted
-	install -Dm644 gigabyted.rules /etc/udev/rules.d/gigabyted.rules
-	install -Dm644 gigabyted.service /usr/lib/systemd/system/gigabyted.service
-	install -Dm644 gigabyted.conf /usr/share/dbus-1/system.d/gigabyted.conf
+	install -Dm755 $(BIN) $(DESTDIR)/usr/bin/gigabyted
+	install -Dm644 gigabyted.rules $(DESTDIR)$(UDEVRULESDIR)/gigabyted.rules
+	install -Dm644 gigabyted.service $(DESTDIR)/usr/lib/systemd/system/gigabyted.service
+	install -Dm644 gigabyted.conf $(DESTDIR)/usr/share/dbus-1/system.d/gigabyted.conf
 
 uninstall:
-	rm -f /usr/bin/gigabyted
-	rm -f /etc/udev/rules.d/gigabyted.rules
-	rm -f /usr/lib/systemd/system/gigabyted.service
-	rm -f /usr/share/dbus-1/system.d/gigabyted.conf
+	rm -f $(DESTDIR)/usr/bin/gigabyted
+	rm -f $(DESTDIR)$(UDEVRULESDIR)/gigabyted.rules
+	rm -f $(DESTDIR)/usr/lib/systemd/system/gigabyted.service
+	rm -f $(DESTDIR)/usr/share/dbus-1/system.d/gigabyted.conf
 
 build:
 	cargo build $(ARGS)
-	strip -s ./target/release/gigabyted
+ifeq ($(DEBUG),0)
+	strip -s $(BIN)
+endif
 
-.PHONY = all clean install uninstall build
+.PHONY: all clean install uninstall build

@@ -1,6 +1,6 @@
 [package]
 name = "gigabyted"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -14,5 +14,5 @@ zbus = "3.12.0"
 udev = "^0.7.0"
 
 [dependencies.async-std]
-version = "*"
+version = "1.13.2"
 features = ["attributes"]

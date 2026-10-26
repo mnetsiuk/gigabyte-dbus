@@ -1,13 +1,13 @@
-%define version 1.0.0
+%define version 1.1.0
 
 Name:       gigabyte-dbus
 Version:    %{version}
 Release:    1%{?dist}
 Summary:    D-Bus service for Gigabyte laptops
 
-License:    MPL
-URL:        https://github.com/tangalbert919/gigabyte-dbus
-Source:     https://github.com/tangalbert919/gigabyte-dbus/archive/refs/tags/v%{version}.tar.gz
+License:    MPL-2.0
+URL:        https://github.com/mnetsiuk/gigabyte-dbus
+Source:     %{url}/archive/refs/tags/v%{version}.tar.gz
 
 BuildRequires:  rust
 BuildRequires:  git
