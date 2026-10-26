@@ -44,10 +44,6 @@ pub fn fixed_mode_speed(stored: i32) -> i32 {
     stored.clamp(MIN_FIXED, FULL_DUTY)
 }
 
-pub fn valid_curve_point(duty: i32, temp: i32) -> bool {
-    (0..=FULL_DUTY).contains(&duty) && (0..=100).contains(&temp)
-}
-
 fn refuse(name: &str, value: impl std::fmt::Debug) -> i32 {
     println!("{name}: refusing {value:?}");
     -1
@@ -126,10 +122,25 @@ impl CtrlPlatform {
     fn read_one(&self, name: &str) -> fdo::Result<i32> {
         Ok(self.read(name, 1)?[0])
     }
+
+    // The curve the EC holds, if the EC may run it (see fast::valid_curve). Call with the lock held.
+    fn usable_ec_curve(&self, caller: &str) -> Option<fast::Curve> {
+        match fast::read_curve(&self.path) {
+            Ok(c) if fast::valid_curve(&c) => Some(c),
+            Ok(c) => {
+                refuse(&format!("{caller}, EC curve"), c);
+                None
+            }
+            Err(e) => {
+                println!("{caller}: {e}");
+                None
+            }
+        }
+    }
 }
 
-// The driver checks fan_mode (0-5), charge_mode (0-1), charge_limit (60-100), gpu_boost (0-3) and
-// the curve index (0-14) itself; a refused value comes back as -1. Methods that change the fans hold
+// The driver checks fan_mode (0-5), charge_mode (0-1), charge_limit (60-100) and gpu_boost (0-3)
+// itself; a refused value comes back as -1. Methods that change the fans hold
 // the fast-curve lock: the curve thread does not write meanwhile, and keeps driving the fans when
 // the change fails.
 #[dbus_interface(name = "com.gigabyte.Platform")]
@@ -139,6 +150,10 @@ impl CtrlPlatform {
             return refuse("fan_mode", value);
         }
         let mut state = self.fast_state();
+        // Curve points are only written through SetFanCurve, but the EC may still hold a broken curve.
+        if value == CURVE && self.usable_ec_curve("SetFanMode").is_none() {
+            return -1;
+        }
         // The driver refuses Fixed/AutoMax -> Curve yet reports success, so go through Normal.
         if value == CURVE && self.read_one("fan_mode").is_ok_and(|m| m > CURVE) && self.write("fan_mode", NORMAL) != 0 {
             return -1;
@@ -175,18 +190,6 @@ impl CtrlPlatform {
     }
     fn set_charge_limit(&self, value: i32) -> i32 {
         self.write("charge_limit", value)
-    }
-    // One point at a time through the driver's shared index; SetFanCurve is safer.
-    fn set_fan_curve_index(&self, value: i32) -> i32 {
-        let _state = self.fast_state();
-        self.write("fan_curve_index", value)
-    }
-    fn set_fan_curve_data(&self, speed: i32, temp: i32) -> i32 {
-        if !valid_curve_point(speed, temp) {
-            return refuse("fan_curve_data", (speed, temp));
-        }
-        let _state = self.fast_state();
-        self.write("fan_curve_data", speed << 8 | temp)
     }
     // All 15 (°C, duty 0-229) points at once, under the lock so no other client moves the shared
     // index in between, then read back. The top point must be full duty. A curve the daemon runs
@@ -319,13 +322,8 @@ impl CtrlPlatform {
             stop_driving(&mut state);
             return 0;
         }
-        let curve = match fast::read_curve(&self.path) {
-            Ok(c) if fast::valid_curve(&c) => c,
-            Ok(c) => return refuse("SetFastCurve, EC curve", c),
-            Err(e) => {
-                println!("SetFastCurve: {e}");
-                return -1;
-            }
+        let Some(curve) = self.usable_ec_curve("SetFastCurve") else {
+            return -1;
         };
         if let Err(e) = fast::sensors_ok(&self.path) {
             println!("SetFastCurve: {e}");
@@ -373,9 +371,6 @@ mod tests {
     fn fan_bounds() {
         assert!(valid_fixed_speed(57) && valid_fixed_speed(229));
         assert!(!valid_fixed_speed(0) && !valid_fixed_speed(56) && !valid_fixed_speed(230));
-        assert!(valid_curve_point(229, 100) && valid_curve_point(0, 0));
-        assert!(!valid_curve_point(255, 60)); // would reach the EC as a duty above 100%
-        assert!(!valid_curve_point(100, 101) && !valid_curve_point(100, -1));
     }
 
     #[test]
