@@ -1,72 +1,149 @@
-<node>
-    <interface name="org.gigabyte.daemon">
-        <method name="GetBatteryCycle">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetChargeLimit">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetChargeMode">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetFanCurveData">
-            <arg type="ii" name="arg_0" direction="out" />
-        </method>
-        <method name="GetFanCurveIndex">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetFanMode">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetFanPwm">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetFanSpeed">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetGpuBoost">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetLightSensor">
-            <arg type="iiii" name="arg_0" direction="out" />
-        </method>
-        <method name="GetPowerOnTime">
-            <arg type="iiiii" name="arg_0" direction="out" />
-        </method>
-        <method name="GetUsbS3Toggle">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="GetUsbS4Toggle">
-            <arg type="i" name="arg_0" direction="out" />
-        </method>
-        <method name="SetChargeLimit">
-            <arg type="i" name="arg_0" direction="in" />
-            <arg type="i" name="arg_1" direction="out" />
-        </method>
-        <method name="SetChargeMode">
-            <arg type="i" name="arg_0" direction="in" />
-            <arg type="i" name="arg_1" direction="out" />
-        </method>
-        <method name="SetFanCurveData">
-            <arg type="i" name="arg_0" direction="in" />
-            <arg type="i" name="arg_1" direction="in" />
-            <arg type="i" name="arg_2" direction="out" />
-        </method>
-        <method name="SetFanCurveIndex">
-            <arg type="i" name="arg_0" direction="in" />
-            <arg type="i" name="arg_1" direction="out" />
-        </method>
-        <method name="SetFanSpeed">
-            <arg type="i" name="arg_0" direction="in" />
-            <arg type="i" name="arg_1" direction="out" />
-        </method>
-        <method name="SetGpuBoost">
-            <arg type="i" name="arg_0" direction="in" />
-            <arg type="i" name="arg_1" direction="out" />
-        </method>
-        <method name="SetFanMode">
-            <arg type="i" name="arg_0" direction="in" />
-            <arg type="i" name="arg_1" direction="out" />
-        </method>
-    </interface>
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  gigabyted on the system bus: name com.gigabyte.daemon,
+  object /com/gigabyte/Platform. Only members of wheel and root may call it (gigabyted.conf).
+
+  Setters return 0 on success and -1 when the value is refused or the driver or hardware fails;
+  the reason goes to the journal (journalctl -u gigabyted). Getters answer a D-Bus error on failure.
+  Fan duty is 0-229, where 229 is 100 %.
+-->
+<node name="/com/gigabyte/Platform">
+  <interface name="com.gigabyte.Platform">
+    <!-- 0 normal, 1 silent, 2 gaming, 3 curve, 4 auto-max, 5 fixed. 3 is refused unless the EC
+         curve passes the SetFanCurve checks; 5 first raises the stored fixed speed to at least 57.
+         Stops the fast curve. -->
+    <method name="SetFanMode">
+      <arg name="value" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- Fixed-mode duty, 57-229 (25-100 %); used in mode 5. Stops the fast curve. -->
+    <method name="SetFanSpeed">
+      <arg name="value" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- 0 normal, 1 custom (stop charging at the charge limit). -->
+    <method name="SetChargeMode">
+      <arg name="value" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- 60-100 %, used in charge mode 1. -->
+    <method name="SetChargeLimit">
+      <arg name="value" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- The EC's 15 (°C 0-100, duty 0-229) points, written at once and read back: temperatures
+         rising, duty never falling, duty 229 at the last point. A running fast curve follows it. -->
+    <method name="SetFanCurve">
+      <arg name="points" type="a(ii)" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- 0-3, checked by the driver. -->
+    <method name="SetGpuBoost">
+      <arg name="value" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- 0-5 as for SetFanMode; the fast curve shows as 5 (see GetFastCurve). -->
+    <method name="GetFanMode">
+      <arg name="mode" type="i" direction="out"/>
+    </method>
+    <!-- The stored fixed-mode duty, 0-229. -->
+    <method name="GetFanSpeed">
+      <arg name="duty" type="i" direction="out"/>
+    </method>
+    <method name="GetChargeMode">
+      <arg name="mode" type="i" direction="out"/>
+    </method>
+    <method name="GetChargeLimit">
+      <arg name="percent" type="i" direction="out"/>
+    </method>
+    <!-- Legacy: the driver's shared curve index (0-14), wherever the last curve access left it.
+         Use GetFanCurve. -->
+    <method name="GetFanCurveIndex">
+      <arg name="index" type="i" direction="out"/>
+    </method>
+    <!-- Legacy: the curve point at that index. Use GetFanCurve. -->
+    <method name="GetFanCurveData">
+      <arg name="temperature" type="i" direction="out"/>
+      <arg name="duty" type="i" direction="out"/>
+    </method>
+    <!-- All 15 (°C, duty 0-229) points the EC holds. -->
+    <method name="GetFanCurve">
+      <arg name="points" type="a(ii)" direction="out"/>
+    </method>
+    <method name="GetBatteryCycle">
+      <arg name="cycles" type="i" direction="out"/>
+    </method>
+    <!-- USB power while asleep (S3) / hibernated (S4): 0 or 1. -->
+    <method name="GetUsbS3Toggle">
+      <arg name="on" type="i" direction="out"/>
+    </method>
+    <method name="GetUsbS4Toggle">
+      <arg name="on" type="i" direction="out"/>
+    </method>
+    <method name="GetGpuBoost">
+      <arg name="mode" type="i" direction="out"/>
+    </method>
+    <method name="GetPowerOnTime">
+      <arg name="day" type="i" direction="out"/>
+      <arg name="hour" type="i" direction="out"/>
+      <arg name="minute" type="i" direction="out"/>
+      <arg name="month" type="i" direction="out"/>
+      <arg name="year" type="i" direction="out"/>
+    </method>
+    <!-- Lux is high << 16 | medium << 8 | low. -->
+    <method name="GetLightSensor">
+      <arg name="version" type="i" direction="out"/>
+      <arg name="low" type="i" direction="out"/>
+      <arg name="medium" type="i" direction="out"/>
+      <arg name="high" type="i" direction="out"/>
+    </method>
+    <!-- Intel RAPL package limits in mW and the PL1 window in s:
+         5000 <= pl1_mw <= pl2_mw <= 135000, tau_s 1-128. Restored on every start. -->
+    <method name="SetCpuPowerLimits">
+      <arg name="pl1_mw" type="i" direction="in"/>
+      <arg name="pl2_mw" type="i" direction="in"/>
+      <arg name="tau_s" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- NVIDIA Dynamic Boost: non-zero enables and starts nvidia-powerd.service, 0 stops and
+         disables it. Queued; 0 means systemctl accepted the job. -->
+    <method name="SetDynamicBoost">
+      <arg name="on" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- 1: the daemon drives the fans from the EC curve (the EC sits in fixed mode); calling it
+         again re-reads the curve. 0: hand the fans back to the EC curve (normal if it is broken). -->
+    <method name="SetFastCurve">
+      <arg name="on" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- 1 while the daemon drives the fans. -->
+    <method name="GetFastCurve">
+      <arg name="on" type="i" direction="out"/>
+    </method>
+    <!-- The CPU fan's current duty, 0-229. -->
+    <method name="GetFanPwm">
+      <arg name="duty" type="i" direction="out"/>
+    </method>
+    <!-- Keyboard backlight. zone 1 left, 2 center, 3 right, 0 all three; red, green, blue 0-255;
+         brightness 0-3. The keyboard keeps it over a reboot. -1 also when the keyboard
+         (1044:7a41, firmware 1904) is missing. -->
+    <method name="SetKeyboardZone">
+      <arg name="zone" type="i" direction="in"/>
+      <arg name="red" type="i" direction="in"/>
+      <arg name="green" type="i" direction="in"/>
+      <arg name="blue" type="i" direction="in"/>
+      <arg name="brightness" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <!-- zone 1-3. An error when the keyboard is missing or its reply is not as expected. -->
+    <method name="GetKeyboardZone">
+      <arg name="zone" type="i" direction="in"/>
+      <arg name="red" type="i" direction="out"/>
+      <arg name="green" type="i" direction="out"/>
+      <arg name="blue" type="i" direction="out"/>
+      <arg name="brightness" type="i" direction="out"/>
+    </method>
+  </interface>
 </node>

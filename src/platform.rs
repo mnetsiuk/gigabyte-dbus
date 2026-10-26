@@ -21,7 +21,8 @@ const FIXED: i32 = 5;
 const RESUME_TRIES: u32 = 15; // 2 s apart: ~30 s for hwmon and coretemp to show up at boot
 const RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-// Any local user may call us, so only accept sane package limits: 5 W <= PL1 <= PL2 <= 135 W, 1-128 s window.
+// Only wheel and root may call us (gigabyted.conf), but still only accept sane package limits:
+// 5 W <= PL1 <= PL2 <= 135 W, 1-128 s window.
 pub fn valid_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> bool {
     (5_000..=135_000).contains(&pl1_mw) && (pl1_mw..=135_000).contains(&pl2_mw) && (1..=128).contains(&tau_s)
 }
