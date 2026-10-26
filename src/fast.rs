@@ -164,7 +164,7 @@ fn ec_hwmon(dev: &Path) -> Result<PathBuf> {
     fs::read_dir(dev.join("hwmon"))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .find(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("hwmon")))
+        .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("hwmon")))
         .ok_or_else(|| invalid("no hwmon under the driver".into()))
 }
 
@@ -205,7 +205,7 @@ impl Sensors {
         let core = fs::read_dir("/sys/class/hwmon")?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .find(|p| fs::read_to_string(p.join("name")).map_or(false, |n| n.trim() == "coretemp"))
+            .find(|p| fs::read_to_string(p.join("name")).is_ok_and(|n| n.trim() == "coretemp"))
             .ok_or_else(|| invalid("no coretemp sensor".into()))?;
         Ok(Sensors {
             core: core.join("temp1_input"),
@@ -259,7 +259,7 @@ impl Control {
             .get_or_insert_with(|| Ramp::new(read_int(&s.pwm).unwrap_or(target).clamp(0, FULL_DUTY).max(target), now));
         let duty = ramp.step(target, now, dt).clamp(0, FULL_DUTY);
         self.ticks = self.ticks.wrapping_add(1);
-        if duty != self.written || self.ticks % RESEND_EVERY == 0 {
+        if duty != self.written || self.ticks.is_multiple_of(RESEND_EVERY) {
             write_attr(dev, "fan_custom_speed", duty)?;
             self.written = duty;
         }
@@ -315,7 +315,7 @@ pub fn run(dev: PathBuf, shared: Shared) {
                         *state = None;
                         forget();
                     }
-                    Err(h) if ctl.errors == GIVE_UP_AFTER || ctl.errors % 120 == 0 => {
+                    Err(h) if ctl.errors == GIVE_UP_AFTER || ctl.errors.is_multiple_of(120) => {
                         println!("Fast curve: {e}; handing the fans back failed ({h}), retrying")
                     }
                     Err(_) => {}

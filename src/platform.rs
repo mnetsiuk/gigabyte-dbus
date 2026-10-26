@@ -133,7 +133,7 @@ impl CtrlPlatform {
         }
         let mut state = self.fast_state();
         // The driver refuses Fixed/AutoMax -> Curve yet reports success, so go through Normal.
-        if value == CURVE && self.read_one("fan_mode").map_or(false, |m| m > CURVE) && self.write("fan_mode", NORMAL) != 0 {
+        if value == CURVE && self.read_one("fan_mode").is_ok_and(|m| m > CURVE) && self.write("fan_mode", NORMAL) != 0 {
             return -1;
         }
         let result = self.write("fan_mode", value);
@@ -182,7 +182,7 @@ impl CtrlPlatform {
         if let Err(e) = fast::write_curve(&self.path, &points) {
             println!("SetFanCurve: {e}");
             // Half written, it may fall as it gets hotter: do not let the EC run it.
-            if self.read_one("fan_mode").map_or(false, |m| m == CURVE) {
+            if self.read_one("fan_mode").is_ok_and(|m| m == CURVE) {
                 self.write("fan_mode", NORMAL);
             }
             return -1;
