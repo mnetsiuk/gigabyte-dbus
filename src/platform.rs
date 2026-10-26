@@ -16,6 +16,7 @@ const RAPL_ZONES: [&str; 2] = ["/sys/class/powercap/intel-rapl:0", "/sys/class/p
 const MIN_FIXED: i32 = 57; // 25%: a fixed speed may not stop the fans
 const NORMAL: i32 = 0;
 const CURVE: i32 = 3;
+const FIXED: i32 = 5;
 
 // Any local user may call us, so only accept sane package limits: 5 W <= PL1 <= PL2 <= 135 W, 1-128 s window.
 pub fn valid_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> bool {
@@ -35,6 +36,12 @@ pub fn apply_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> std::io::Result
 // The driver sends these straight to the EC without checking them.
 pub fn valid_fixed_speed(duty: i32) -> bool {
     (MIN_FIXED..=FULL_DUTY).contains(&duty)
+}
+
+// Fixed mode runs whatever fan_custom_speed holds, which the fast curve or take_over may have
+// left below the minimum, even at 0: switch to it at no less than MIN_FIXED.
+pub fn fixed_mode_speed(stored: i32) -> i32 {
+    stored.clamp(MIN_FIXED, FULL_DUTY)
 }
 
 pub fn valid_curve_point(duty: i32, temp: i32) -> bool {
@@ -135,6 +142,16 @@ impl CtrlPlatform {
         // The driver refuses Fixed/AutoMax -> Curve yet reports success, so go through Normal.
         if value == CURVE && self.read_one("fan_mode").is_ok_and(|m| m > CURVE) && self.write("fan_mode", NORMAL) != 0 {
             return -1;
+        }
+        if value == FIXED {
+            match self.read_one("fan_custom_speed") {
+                Ok(stored) if self.write("fan_custom_speed", fixed_mode_speed(stored)) == 0 => {}
+                Ok(_) => return -1,
+                Err(e) => {
+                    println!("SetFanMode: {e}");
+                    return -1;
+                }
+            }
         }
         let result = self.write("fan_mode", value);
         if result == 0 {
@@ -359,5 +376,15 @@ mod tests {
         assert!(valid_curve_point(229, 100) && valid_curve_point(0, 0));
         assert!(!valid_curve_point(255, 60)); // would reach the EC as a duty above 100%
         assert!(!valid_curve_point(100, 101) && !valid_curve_point(100, -1));
+    }
+
+    #[test]
+    fn fixed_mode_minimum() {
+        assert_eq!(fixed_mode_speed(0), MIN_FIXED); // left by the fast curve or take_over
+        assert_eq!(fixed_mode_speed(56), MIN_FIXED);
+        assert_eq!(fixed_mode_speed(57), 57);
+        assert_eq!(fixed_mode_speed(183), 183);
+        assert_eq!(fixed_mode_speed(255), FULL_DUTY);
+        assert!((-300..600).all(|s| valid_fixed_speed(fixed_mode_speed(s))));
     }
 }
