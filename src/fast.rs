@@ -125,13 +125,17 @@ pub fn read_curve(dev: &Path) -> Result<Curve> {
         .collect()
 }
 
-// Call with the lock held.
+// Call with the lock held. Half written, a curve may fall as it gets hotter, so on failure the EC
+// is taken off Curve mode.
 pub fn write_curve(dev: &Path, c: &[(i32, i32)]) -> Result<()> {
-    for (i, &(temp, duty)) in c.iter().enumerate() {
+    let result = c.iter().enumerate().try_for_each(|(i, &(temp, duty))| {
         write_attr(dev, "fan_curve_index", i as i32)?;
-        write_attr(dev, "fan_curve_data", duty << 8 | temp)?;
+        write_attr(dev, "fan_curve_data", duty << 8 | temp)
+    });
+    if result.is_err() && read_attr(dev, "fan_mode").is_ok_and(|m| m == CURVE) {
+        drop(write_attr(dev, "fan_mode", NORMAL));
     }
-    Ok(())
+    result
 }
 
 pub fn save(c: &Curve) -> Result<()> {

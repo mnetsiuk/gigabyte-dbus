@@ -17,6 +17,8 @@ const MIN_FIXED: i32 = 57; // 25%: a fixed speed may not stop the fans
 const NORMAL: i32 = 0;
 const CURVE: i32 = 3;
 const FIXED: i32 = 5;
+const RESUME_TRIES: u32 = 15; // 2 s apart: ~30 s for hwmon and coretemp to show up at boot
+const RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 // Any local user may call us, so only accept sane package limits: 5 W <= PL1 <= PL2 <= 135 W, 1-128 s window.
 pub fn valid_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> bool {
@@ -75,27 +77,36 @@ impl CtrlPlatform {
         fast::lock(&self.fast)
     }
 
-    // After a restart: drive the fans again if the daemon did before.
+    // After a restart: drive the fans again if the daemon did before. Started on the driver's bind
+    // event, the daemon can be ahead of the driver's attributes, its hwmon or coretemp, so keep
+    // trying for a while. Runs before the D-Bus object and the curve thread exist, so nothing
+    // else touches the fans meanwhile.
     pub fn resume_fast_curve(&self) {
         let Some(curve) = fast::load() else {
             fast::forget(); // missing or unusable
             return;
         };
-        // Started on the driver's bind event, the daemon can be a moment ahead of its attributes.
-        for _ in 0..20 {
-            if self.path.join("fan_mode").exists() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
         let mut state = self.fast_state();
-        match fast::sensors_ok(&self.path).and_then(|_| fast::take_over(&self.path)) {
-            Ok(()) => *state = Some(fast::Driving { curve, fresh: true }),
-            Err(e) => {
-                println!("Fast curve: could not resume: {e}");
-                fast::forget();
+        for attempt in 1..=RESUME_TRIES {
+            // The curve goes back to the EC as well, so GetFanCurve shows the one being run.
+            let result = fast::sensors_ok(&self.path)
+                .and_then(|_| fast::write_curve(&self.path, &curve))
+                .and_then(|_| fast::take_over(&self.path));
+            match result {
+                Ok(()) => {
+                    *state = Some(fast::Driving { curve, fresh: true });
+                    return;
+                }
+                Err(e) if attempt == RESUME_TRIES => println!("Fast curve: could not resume, giving up: {e}"),
+                Err(e) => {
+                    if attempt == 1 {
+                        println!("Fast curve: could not resume yet ({e}), retrying");
+                    }
+                    std::thread::sleep(RESUME_WAIT);
+                }
             }
         }
+        fast::forget();
     }
 
     // A driver attribute; -1 instead of dying when the driver refuses the value.
@@ -201,10 +212,6 @@ impl CtrlPlatform {
         let mut state = self.fast_state();
         if let Err(e) = fast::write_curve(&self.path, &points) {
             println!("SetFanCurve: {e}");
-            // Half written, it may fall as it gets hotter: do not let the EC run it.
-            if self.read_one("fan_mode").is_ok_and(|m| m == CURVE) {
-                self.write("fan_mode", NORMAL);
-            }
             return -1;
         }
         match fast::read_curve(&self.path) {
