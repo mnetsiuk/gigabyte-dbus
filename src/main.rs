@@ -1,4 +1,5 @@
 mod fast;
+mod keyboard;
 mod platform;
 
 use std::{error::Error, future::pending, env};

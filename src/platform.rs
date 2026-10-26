@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use zbus::{dbus_interface, fdo};
 
 use crate::fast;
+use crate::keyboard;
 use crate::fast::FULL_DUTY;
 
 pub struct CtrlPlatform {
@@ -357,6 +358,25 @@ impl CtrlPlatform {
     }
     fn get_fan_pwm(&self) -> fdo::Result<i32> {
         self.read_one("fan_pwm")
+    }
+    // Keyboard backlight (see keyboard.rs): zone 1 left, 2 center, 3 right or 0 for all three,
+    // colour 0-255 each, brightness 0-3. The keyboard keeps it over a reboot by itself.
+    fn set_keyboard_zone(&self, zone: i32, red: i32, green: i32, blue: i32, brightness: i32) -> i32 {
+        let Some(packet) = keyboard::set_packet(zone, red, green, blue, brightness) else {
+            return refuse("SetKeyboardZone", (zone, red, green, blue, brightness));
+        };
+        match keyboard::set(&packet) {
+            Ok(()) => 0,
+            Err(e) => {
+                println!("SetKeyboardZone: {e}");
+                -1
+            }
+        }
+    }
+    // Zone 1-3.
+    #[dbus_interface(out_args("red", "green", "blue", "brightness"))]
+    fn get_keyboard_zone(&self, zone: i32) -> fdo::Result<(i32, i32, i32, i32)> {
+        keyboard::get(zone).map_err(|e| fdo::Error::Failed(format!("keyboard zone {zone}: {e}")))
     }
 }
 
