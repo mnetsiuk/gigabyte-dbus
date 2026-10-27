@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)] // a debugging tool, not installed: a panic is a fine error here
 extern crate udev;
 
 fn main() {

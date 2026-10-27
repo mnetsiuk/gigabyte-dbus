@@ -9,7 +9,7 @@ License:    MPL-2.0
 URL:        https://github.com/mnetsiuk/gigabyte-dbus
 Source:     %{url}/archive/refs/tags/v%{version}.tar.gz
 
-BuildRequires:  rust
+BuildRequires:  rust >= 1.87
 BuildRequires:  git
 BuildRequires:  rust-std-static
 BuildRequires:  pkgconfig(libzstd)
