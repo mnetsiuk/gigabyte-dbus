@@ -177,7 +177,7 @@ fn ec_hwmon(dev: &Path) -> Result<PathBuf> {
 // Fixed mode at the duty the fans run at now, so taking over causes no jump.
 pub fn take_over(dev: &Path) -> Result<()> {
     if read_attr(dev, "fan_mode")? != FIXED {
-        let duty = read_int(&ec_hwmon(dev)?.join("pwm1"))?.clamp(0, FULL_DUTY);
+        let duty = read_attr(dev, "fan_pwm")?.clamp(0, FULL_DUTY);
         write_attr(dev, "fan_custom_speed", duty)?;
         write_attr(dev, "fan_mode", FIXED)?;
     }
@@ -202,7 +202,7 @@ struct Sensors {
     core: PathBuf, // coretemp package: the CPU's own, fastest sensor
     ec_cpu: PathBuf,
     ec_gpu: PathBuf,
-    pwm: PathBuf,
+    pwm: PathBuf, // the EC's raw duty; hwmon's pwm1 is scaled to 0-255 by newer drivers
 }
 
 impl Sensors {
@@ -217,7 +217,7 @@ impl Sensors {
             core: core.join("temp1_input"),
             ec_cpu: ec.join("temp1_input"),
             ec_gpu: ec.join("temp2_input"),
-            pwm: ec.join("pwm1"),
+            pwm: dev.join("fan_pwm"),
         })
     }
 
