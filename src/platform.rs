@@ -14,6 +14,7 @@ pub struct CtrlPlatform {
 
 pub const CPU_LIMITS_FILE: &str = "/var/lib/gigabyted/cpu-limits";
 const RAPL_ZONES: [&str; 2] = ["/sys/class/powercap/intel-rapl:0", "/sys/class/powercap/intel-rapl-mmio:0"];
+const RAPL_FILES: [&str; 3] = ["constraint_0_power_limit_uw", "constraint_1_power_limit_uw", "constraint_0_time_window_us"];
 const MIN_FIXED: i32 = 57; // 25%: a fixed speed may not stop the fans
 const NORMAL: i32 = 0;
 const CURVE: i32 = 3;
@@ -29,11 +30,25 @@ pub fn valid_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> bool {
 }
 
 // Firmware programs both the MSR and the MMIO RAPL interface and the lower one wins, so set both.
+// A zone that takes only some of the values gets its old ones back, so none is left with PL1
+// above PL2.
 pub fn apply_cpu_limits(pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> std::io::Result<()> {
-    for zone in RAPL_ZONES.iter().filter(|z| std::path::Path::new(z).exists()) {
-        fs::write(format!("{zone}/constraint_0_power_limit_uw"), (pl1_mw as i64 * 1000).to_string())?;
-        fs::write(format!("{zone}/constraint_1_power_limit_uw"), (pl2_mw as i64 * 1000).to_string())?;
-        fs::write(format!("{zone}/constraint_0_time_window_us"), (tau_s as i64 * 1_000_000).to_string())?;
+    apply_limits_to(&RAPL_ZONES, pl1_mw, pl2_mw, tau_s)
+}
+
+fn apply_limits_to(zones: &[&str], pl1_mw: i32, pl2_mw: i32, tau_s: i32) -> std::io::Result<()> {
+    let new = [pl1_mw as i64 * 1000, pl2_mw as i64 * 1000, tau_s as i64 * 1_000_000].map(|v| v.to_string());
+    for zone in zones.iter().map(std::path::Path::new).filter(|z| z.exists()) {
+        let write = |values: &[String]| {
+            RAPL_FILES.iter().zip(values).try_for_each(|(f, v)| fs::write(zone.join(f), v.trim()))
+        };
+        let old = RAPL_FILES.iter().map(|f| fs::read_to_string(zone.join(f))).collect::<std::io::Result<Vec<_>>>()?;
+        if let Err(e) = write(&new) {
+            if let Err(r) = write(&old) {
+                println!("CPU limits: {}: putting the old ones back failed: {r}", zone.display());
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -401,6 +416,20 @@ mod tests {
         assert!(!valid_cpu_limits(4_000, 30_000, 56));
         assert!(!valid_cpu_limits(55_000, 200_000, 56));
         assert!(!valid_cpu_limits(55_000, 115_000, 0));
+    }
+
+    #[test]
+    fn cpu_limits_rollback() {
+        let dir = std::env::temp_dir().join(format!("gigabyted-rapl-{}", std::process::id()));
+        let zone = dir.to_str().unwrap_or_default();
+        fs::create_dir_all(&dir).ok();
+        fs::write(dir.join(RAPL_FILES[0]), "55000000\n").ok();
+        std::os::unix::fs::symlink("/proc/version", dir.join(RAPL_FILES[1])).ok(); // PL2 reads, can't be written
+        fs::write(dir.join(RAPL_FILES[2]), "56000000\n").ok();
+        assert!(apply_limits_to(&[zone], 100_000, 120_000, 28).is_err());
+        let pl1 = fs::read_to_string(dir.join(RAPL_FILES[0])).unwrap_or_default();
+        fs::remove_dir_all(&dir).ok();
+        assert_eq!(pl1, "55000000"); // the old PL1 is back, not 100 W over the old PL2
     }
 
     #[test]
