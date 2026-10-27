@@ -17,6 +17,7 @@ const RAPL_ZONES: [&str; 2] = ["/sys/class/powercap/intel-rapl:0", "/sys/class/p
 const MIN_FIXED: i32 = 57; // 25%: a fixed speed may not stop the fans
 const NORMAL: i32 = 0;
 const CURVE: i32 = 3;
+const AUTO_MAX: i32 = 4;
 const FIXED: i32 = 5;
 const RESUME_TRIES: u32 = 15; // 2 s apart: ~30 s for hwmon and coretemp to show up at boot
 const RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -42,8 +43,8 @@ pub fn valid_fixed_speed(duty: i32) -> bool {
     (MIN_FIXED..=FULL_DUTY).contains(&duty)
 }
 
-// Fixed mode runs whatever fan_custom_speed holds, which the fast curve or take_over may have
-// left below the minimum, even at 0: switch to it at no less than MIN_FIXED.
+// Fixed and auto-maximum mode run whatever fan_custom_speed holds, which the fast curve or
+// take_over may have left below the minimum, even at 0: switch to them at no less than MIN_FIXED.
 pub fn fixed_mode_speed(stored: i32) -> i32 {
     stored.clamp(MIN_FIXED, FULL_DUTY)
 }
@@ -171,7 +172,7 @@ impl CtrlPlatform {
         if value == CURVE && self.read_one("fan_mode").is_ok_and(|m| m > CURVE) && self.write("fan_mode", NORMAL) != 0 {
             return -1;
         }
-        if value == FIXED {
+        if value == FIXED || value == AUTO_MAX {
             match self.read_one("fan_custom_speed") {
                 Ok(stored) if self.write("fan_custom_speed", fixed_mode_speed(stored)) == 0 => {}
                 Ok(_) => return -1,
