@@ -63,7 +63,10 @@ GetKeyboardZone(i zone) -> (i red, i green, i blue, i brightness)
 ```
 
 Zones 1 left, 2 center, 3 right, or 0 for all three (set only); colours 0-255; brightness 0-3. The
-keyboard saves every change itself. The daemon talks only to interface 3 of the ITE keyboard
+keyboard saves every change itself, by erasing and rewriting a flash sector about a second after
+the last one, so the daemon limits how often that can happen, whoever asks: changes less than half a
+second apart count as one, 20 may come at once, and after that one every 3 minutes. A change over
+the limit returns -1. The daemon talks only to interface 3 of the ITE keyboard
 (USB 1044:7a41) with firmware 1.9.0.4 (`bcdDevice` 1904), the one the protocol was read from, and
 sends only the colour commands, so user programs no longer need access to the keyboard's USB
 device, whose other commands reach its firmware update and flash erase. Remove any udev rule that

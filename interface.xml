@@ -127,8 +127,9 @@
       <arg name="duty" type="i" direction="out"/>
     </method>
     <!-- Keyboard backlight. zone 1 left, 2 center, 3 right, 0 all three; red, green, blue 0-255;
-         brightness 0-3. The keyboard keeps it over a reboot. -1 also when the keyboard
-         (1044:7a41, firmware 1904) is missing. -->
+         brightness 0-3. The keyboard keeps it over a reboot, saved to its flash. -1 also when the
+         keyboard (1044:7a41, firmware 1904) is missing, or when changes come too often for its
+         flash: 20 at once, then one per 3 minutes; changes under 0.5 s apart count as one. -->
     <method name="SetKeyboardZone">
       <arg name="zone" type="i" direction="in"/>
       <arg name="red" type="i" direction="in"/>

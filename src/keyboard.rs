@@ -11,12 +11,19 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 const SET: u8 = 0x08;
 const GET: u8 = 0x88;
 const ALL: u8 = 0x0A; // the zone byte for all three zones
 const LEVELS: [u8; 4] = [0x00, 0x18, 0x20, 0x32]; // brightness 0-3; the firmware knows no others
 const BUF_LEN: usize = 9; // report ID 0, then the 8 bytes
+// Every SET restarts the firmware's save countdown (~1 s), and the sector is erased once it runs
+// out. A SET sooner than SAME_SAVE after the last one only restarts it; any other SET starts a new
+// save and spends one of BURST saves, which come back one per REFILL.
+const SAME_SAVE: Duration = Duration::from_millis(500);
+const BURST: f64 = 20.0;
+const REFILL: Duration = Duration::from_secs(180);
 
 // HIDIOCSFEATURE(9) and HIDIOCGFEATURE(9) from linux/hidraw.h: _IOC(_IOC_WRITE | _IOC_READ, 'H', nr, 9).
 const fn hidioc(nr: u32) -> u32 {
@@ -106,11 +113,46 @@ fn send(file: &File, packet: &Packet) -> Result<()> {
     feature(file, HIDIOCSFEATURE, &mut buf).map(drop)
 }
 
+// Caps flash erases at ~BURST a burst and 1 per REFILL after that, whoever the caller is.
+// ponytail: in memory, so a daemon restart refills it; restarting takes root, persist it in
+// /var/lib/gigabyted if that changes.
+struct Budget {
+    saves: f64,
+    refilled: Instant,
+    last_set: Option<Instant>,
+}
+
+impl Budget {
+    fn new(now: Instant) -> Self {
+        Budget { saves: BURST, refilled: now, last_set: None }
+    }
+
+    // Whether a SET may go out at `now`; a new save is paid for here.
+    fn allow(&mut self, now: Instant) -> bool {
+        let earned = now.duration_since(self.refilled).as_secs_f64() / REFILL.as_secs_f64();
+        self.saves = (self.saves + earned).min(BURST);
+        self.refilled = now;
+        let new_save = self.last_set.is_none_or(|t| now.duration_since(t) >= SAME_SAVE);
+        if new_save {
+            if self.saves < 1.0 {
+                return false;
+            }
+            self.saves -= 1.0;
+        }
+        self.last_set = Some(now);
+        true
+    }
+}
+
 // One client at a time, so no one else's command lands between a GET and its reply.
-static LOCK: Mutex<()> = Mutex::new(());
+static LOCK: Mutex<Option<Budget>> = Mutex::new(None);
 
 pub fn set(packet: &Packet) -> Result<()> {
-    let _lock = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut budget = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    if !budget.get_or_insert_with(|| Budget::new(now)).allow(now) {
+        return Err(Error::other("too many lighting changes, each one wears the keyboard's flash; try again in a few minutes"));
+    }
     send(&open()?, packet)
 }
 
@@ -166,6 +208,25 @@ mod tests {
         assert_eq!(set_packet(0, 255, 0, 128, 3).map(|p| p.0), Some([SET, ALL, 255, 0, 128, 0x32, 0, 0]));
         assert_eq!(set_packet(2, 1, 2, 3, 1).map(|p| p.0), Some([SET, 2, 1, 2, 3, 0x18, 0, 0]));
         assert!(set_packet(1, 0, 256, 0, 0).is_none() && set_packet(1, 0, 0, -1, 0).is_none());
+    }
+
+    #[test]
+    fn budget() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut b = Budget::new(t0);
+        for i in 0..BURST as u64 {
+            assert!(b.allow(at(i * 1000))); // a second apart: a save each
+        }
+        // Spent, but SETs closer than SAME_SAVE only restart the countdown: free for 40 s.
+        for i in 1..100 {
+            assert!(b.allow(at(19_000 + i * 400)));
+        }
+        assert!(!b.allow(at(58_600 + 600))); // a new save: none left
+        // One save back per REFILL.
+        let later = 59_200 + REFILL.as_millis() as u64;
+        assert!(b.allow(at(later)));
+        assert!(!b.allow(at(later + 1000)));
     }
 
     #[test]
