@@ -169,8 +169,15 @@ impl CtrlPlatform {
             return -1;
         }
         // The driver refuses Fixed/AutoMax -> Curve yet reports success, so go through Normal.
-        if value == CURVE && self.read_one("fan_mode").is_ok_and(|m| m > CURVE) && self.write("fan_mode", NORMAL) != 0 {
-            return -1;
+        if value == CURVE {
+            match self.read_one("fan_mode") {
+                Ok(m) if m > CURVE && self.write("fan_mode", NORMAL) != 0 => return -1,
+                Ok(_) => {}
+                Err(e) => {
+                    println!("SetFanMode: {e}");
+                    return -1;
+                }
+            }
         }
         if value == FIXED || value == AUTO_MAX {
             match self.read_one("fan_custom_speed") {
