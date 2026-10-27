@@ -7,7 +7,7 @@ without running as root themselves.
 This is a fork of [tangalbert919/gigabyte-dbus](https://github.com/tangalbert919/gigabyte-dbus) for
 the **AORUS 5 SE** (driver 0.2.0). It adds safety checks on every value it passes to the EC, a fast
 fan curve, CPU power limits, NVIDIA Dynamic Boost and the keyboard backlight. Its client is
-[Aero Control Center](https://github.com/tangalbert919/AeroControlCenter).
+[Aero Control Center](https://github.com/mnetsiuk/AeroControlCenter), a fork made for this daemon.
 
 ## Access
 
